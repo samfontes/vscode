@@ -9,7 +9,7 @@ import * as path from 'path';
 import { commands, Disposable, LineChange, MessageOptions, OutputChannel, Position, ProgressLocation, QuickPickItem, Range, SourceControlResourceState, TextDocumentShowOptions, TextEditor, Uri, ViewColumn, window, workspace, WorkspaceEdit, WorkspaceFolder, TimelineItem, env, Selection, TextDocumentContentProvider } from 'vscode';
 import TelemetryReporter from 'vscode-extension-telemetry';
 import * as nls from 'vscode-nls';
-import { Branch, GitErrorCodes, Ref, RefType, Status, CommitOptions, RemoteSourceProvider } from './api/git';
+import { Branch, GitErrorCodes, Ref, RefType, Status, CommitOptions } from './api/git';
 import { ForcePushMode, Git, Stash } from './git';
 import { Model } from './model';
 import { Repository, Resource, ResourceGroupType } from './repository';
@@ -18,7 +18,6 @@ import { fromGitUri, toGitUri, isGitUri } from './uri';
 import { grep, isDescendant, pathEquals } from './util';
 import { Log, LogLevel } from './log';
 import { GitTimelineItem } from './timelineProvider';
-import { ApiRepository } from './api/api1';
 import { pickRemoteSource } from './remoteSource';
 
 const localize = nls.loadMessageBundle();
@@ -140,7 +139,7 @@ class HEADItem implements QuickPickItem {
 	get alwaysShow(): boolean { return true; }
 }
 
-class AddRemoteItem implements QuickPickItem {
+export class AddRemoteItem implements QuickPickItem {
 
 	constructor(private cc: CommandCenter) { }
 
@@ -2482,60 +2481,7 @@ export class CommandCenter {
 
 	@command('git.publish', { repository: true })
 	async publish(repository: Repository): Promise<void> {
-		const branchName = repository.HEAD && repository.HEAD.name || '';
-		const remotes = repository.remotes;
-
-		if (remotes.length === 0) {
-			const providers = this.model.getRemoteProviders().filter(p => !!p.publishRepository);
-
-			if (providers.length === 0) {
-				window.showWarningMessage(localize('no remotes to publish', "Your repository has no remotes configured to publish to."));
-				return;
-			}
-
-			let provider: RemoteSourceProvider;
-
-			if (providers.length === 1) {
-				provider = providers[0];
-			} else {
-				const picks = providers
-					.map(provider => ({ label: (provider.icon ? `$(${provider.icon}) ` : '') + localize('publish to', "Publish to {0}", provider.name), alwaysShow: true, provider }));
-				const placeHolder = localize('pick provider', "Pick a provider to publish the branch '{0}' to:", branchName);
-				const choice = await window.showQuickPick(picks, { placeHolder });
-
-				if (!choice) {
-					return;
-				}
-
-				provider = choice.provider;
-			}
-
-			await provider.publishRepository!(new ApiRepository(repository));
-			return;
-		}
-
-		if (remotes.length === 1) {
-			return await repository.pushTo(remotes[0].name, branchName, true);
-		}
-
-		const addRemote = new AddRemoteItem(this);
-		const picks = [...repository.remotes.map(r => ({ label: r.name, description: r.pushUrl })), addRemote];
-		const placeHolder = localize('pick remote', "Pick a remote to publish the branch '{0}' to:", branchName);
-		const choice = await window.showQuickPick(picks, { placeHolder });
-
-		if (!choice) {
-			return;
-		}
-
-		if (choice === addRemote) {
-			const newRemote = await this.addRemote(repository);
-
-			if (newRemote) {
-				await repository.pushTo(newRemote, branchName, true);
-			}
-		} else {
-			await repository.pushTo(choice.label, branchName, true);
-		}
+		await repository.publish();
 	}
 
 	@command('git.ignore')

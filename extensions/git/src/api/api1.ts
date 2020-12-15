@@ -205,6 +205,10 @@ export class ApiRepository implements Repository {
 		return this._repository.pushTo(remoteName, branchName, setUpstream);
 	}
 
+	publish(): Promise<void> {
+		return this._repository.publish();
+	}
+
 	blame(path: string): Promise<string> {
 		return this._repository.blame(path);
 	}

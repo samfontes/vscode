@@ -7,10 +7,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CancellationToken, Command, Disposable, Event, EventEmitter, Memento, OutputChannel, ProgressLocation, ProgressOptions, scm, SourceControl, SourceControlInputBox, SourceControlInputBoxValidation, SourceControlInputBoxValidationType, SourceControlResourceDecorations, SourceControlResourceGroup, SourceControlResourceState, ThemeColor, Uri, window, workspace, WorkspaceEdit, FileDecoration, commands } from 'vscode';
 import * as nls from 'vscode-nls';
-import { Branch, Change, GitErrorCodes, LogOptions, Ref, RefType, Remote, Status, CommitOptions, BranchQuery } from './api/git';
+import { Branch, Change, GitErrorCodes, LogOptions, Ref, RefType, Remote, Status, CommitOptions, BranchQuery, RemoteSourceProvider } from './api/git';
 import { AutoFetcher } from './autofetch';
 import { debounce, memoize, throttle } from './decorators';
 import { Commit, ForcePushMode, GitError, Repository as BaseRepository, Stash, Submodule, LogFileOptions } from './git';
+import { Model } from './model';
 import { StatusBarCommands } from './statusbar';
 import { toGitUri } from './uri';
 import { anyEvent, combinedDisposable, debounceEvent, dispose, EmptyDisposable, eventToPromise, filterEvent, find, IDisposable, isDescendant, onceEvent } from './util';
@@ -19,6 +20,7 @@ import { Log, LogLevel } from './log';
 import { IRemoteSourceProviderRegistry } from './remoteProvider';
 import { IPushErrorHandlerRegistry } from './pushError';
 import { ApiRepository } from './api/api1';
+import { AddRemoteItem } from './commands';
 
 const timeout = (millis: number) => new Promise(c => setTimeout(c, millis));
 
@@ -291,6 +293,7 @@ export const enum Operation {
 	Remote = 'Remote',
 	Fetch = 'Fetch',
 	Pull = 'Pull',
+	Publish = 'Publish',
 	Push = 'Push',
 	CherryPick = 'CherryPick',
 	Sync = 'Sync',
@@ -687,6 +690,7 @@ export class Repository implements Disposable {
 
 	constructor(
 		private readonly repository: BaseRepository,
+		private model: Model,
 		remoteSourceProviderRegistry: IRemoteSourceProviderRegistry,
 		private pushErrorHandlerRegistry: IPushErrorHandlerRegistry,
 		globalState: Memento,
@@ -1219,6 +1223,8 @@ export class Repository implements Disposable {
 		await this.run(Operation.Push, () => this._push(remote, branch, undefined, undefined, forcePushMode));
 	}
 
+
+
 	async pushTo(remote?: string, name?: string, setUpstream: boolean = false, forcePushMode?: ForcePushMode): Promise<void> {
 		await this.run(Operation.Push, () => this._push(remote, name, setUpstream, undefined, forcePushMode));
 	}
@@ -1233,6 +1239,61 @@ export class Repository implements Disposable {
 
 	async blame(path: string): Promise<string> {
 		return await this.run(Operation.Blame, () => this.repository.blame(path));
+	}
+
+	async publish(): Promise<void> {
+		const branchName = this.HEAD && this.HEAD.name || '';
+		const remotes = this.remotes;
+
+		if (remotes.length === 0) {
+			const providers = this.model.getRemoteProviders().filter(p => !!p.publishRepository);
+
+			if (providers.length === 0) {
+				window.showWarningMessage(localize('no remotes to publish', "Your repository has no remotes configured to publish to."));
+				return;
+			}
+
+			let provider: RemoteSourceProvider;
+
+			if (providers.length === 1) {
+				provider = providers[0];
+			} else {
+				const picks = providers
+					.map(provider => ({ label: (provider.icon ? `$(${provider.icon}) ` : '') + localize('publish to', "Publish to {0}", provider.name), alwaysShow: true, provider }));
+				const placeHolder = localize('pick provider', "Pick a provider to publish the branch '{0}' to:", branchName);
+				const choice = await window.showQuickPick(picks, { placeHolder });
+
+				if (!choice) {
+					return;
+				}
+
+				provider = choice.provider;
+			}
+
+			await provider.publishRepository!(new ApiRepository(this));
+			return;
+		}
+
+		if (remotes.length === 1) {
+			return await this.pushTo(remotes[0].name, branchName, true);
+		}
+
+		const remoteName = remotes[0].name;
+		const remoteURL = remotes[0].pushUrl;
+		const addRemote = new AddRemoteItem(this);
+		const picks = [...remotes.map(r => ({ label: r.name, description: r.pushUrl })), addRemote];
+		const placeHolder = localize('pick remote', "Pick a remote to publish the branch '{0}' to:", branchName);
+		const choice = await window.showQuickPick(picks, { placeHolder });
+
+		if (!choice) {
+			return;
+		}
+
+		if (choice === addRemote) {
+			await this.addRemote(remoteName, remoteURL!);
+		}
+
+		await this.pushTo(remoteName, branchName, true);
 	}
 
 	@throttle
